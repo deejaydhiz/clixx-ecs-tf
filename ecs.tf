@@ -24,6 +24,13 @@ data "aws_ecr_image" "clixx_image" {
   image_tag       = "latest" 
 }
 
+### Create keypair ###
+resource "aws_key_pair" "this" {
+  key_name   = "clixx-kp"
+  public_key = file(var.public_key_path)
+}
+
+
 resource "aws_iam_role_policy_attachment" "ecs_instance_role_attachment" {
   role       = var.ec2_properties["iam_instance_profile"]
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
@@ -129,7 +136,7 @@ resource "aws_launch_template" "clixx_lt" {
   name_prefix   = "clixx-lt-"
   image_id      = data.aws_ami.ecs_ami.id
   instance_type = var.ec2_properties["instance_type"]
-  key_name      = "jenkinskp"
+  key_name      = aws_key_pair.this.key_name
   vpc_security_group_ids = [aws_security_group.app_sg.id]
 
   user_data = base64encode(<<-EOF
