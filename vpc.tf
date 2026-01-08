@@ -234,7 +234,7 @@ resource "aws_instance" "bastion" {
   ami                         = data.aws_ami.ecs_ami.id
   instance_type               = var.ec2_properties.instance_type
   subnet_id                   = aws_subnet.public_subnet["us-east-1a"].id
-  key_name                    = "jenkinskp"
+  key_name                    = aws_key_pair.this.key_name
   vpc_security_group_ids      = [ aws_security_group.public_sg.id ]
   associate_public_ip_address = true
 
