@@ -1,0 +1,236 @@
+data "aws_route53_zone" "mydns" {
+  provider     = aws.management
+  name         = "deji-stack.com"
+  private_zone = false
+}
+
+data "aws_ami" "ecs_ami" {
+  most_recent = true
+
+  filter {
+    name   = "name"
+    values = [var.ami_name]
+  }
+
+  owners = ["self", "186769093804"]
+}
+
+data "aws_ecr_repository" "clixx_repo" {
+  name = "clixx-repository"
+}
+
+data "aws_ecr_image" "clixx_image" {
+  repository_name = "clixx-repository"
+  image_tag       = "latest" 
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_instance_role_attachment" {
+  role       = var.iam_instance_profile_name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+resource "aws_db_instance" "clixx_rds_instance" {
+  identifier              = "wordpressdbclixxjenkins"
+  instance_class          = "db.t4g.micro"
+  engine                  = "mysql"
+  snapshot_identifier     = "wordpressdbclixxsnap"
+  skip_final_snapshot     = true
+  publicly_accessible     = false
+  db_subnet_group_name    = aws_db_subnet_group.this.name
+  vpc_security_group_ids  = [aws_security_group.rds_sg.id]
+
+  tags = {
+    Name = "clixx-rds-instance"
+  }
+}
+
+resource "aws_ecs_cluster" "clixx_ecs_cluster" {
+  name = "clixx-ecs-cluster"
+
+}
+
+resource "aws_ecs_task_definition" "clixx_task" {
+  family                   = "clixx-task"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["EC2"]
+  cpu                      = "256"
+  memory                   = "512"
+
+  container_definitions = jsonencode([
+    {
+      "name"      = "clixx-cont"
+      "image"     = "${data.aws_ecr_repository.clixx_repo.repository_url}@${data.aws_ecr_image.clixx_image.image_digest}"
+      "essential" = true
+      "portMappings" = [
+        {
+          "containerPort" = 80
+          "hostPort"      = 80
+          "protocol"      = "tcp"
+        }
+      ]
+      "logConfiguration" : {
+        "logDriver" : "awslogs",
+        "options" : {
+          "awslogs-group" : "/ecs/clixx-task",
+          "awslogs-region" : "${var.aws_region}", 
+          "awslogs-stream-prefix" : "ecs"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_cloudwatch_log_group" "clixx_log_group" {
+  name = "/ecs/clixx-task"
+  retention_in_days = 7
+}
+
+resource "aws_lb" "clixx_alb" {
+  name               = "clixx-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.public_sg.id]
+  subnets            = [for subnet in aws_subnet.public_subnet : subnet.id]
+
+  tags = {
+    Environment = "automation"
+  }
+}
+
+resource "aws_lb_target_group" "clixx_tg" {
+  name     = "clixx-tg"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.deployment_vpc.id
+  target_type = "ip"
+
+  health_check {
+    protocol            = "HTTP"
+    path                = "/"
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+    timeout             = 5
+    interval            = 30
+  }
+}
+
+resource "aws_lb_listener" "clixx_listener" {
+  load_balancer_arn = aws_lb.clixx_alb.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.clixx_tg.arn
+  }
+}
+
+resource "aws_launch_template" "clixx_lt" {
+  name_prefix   = "clixx-lt-"
+  image_id      = data.aws_ami.ecs_ami.id
+  instance_type = var.ec2_properties["instance_type"]
+  key_name      = "jenkinskp"
+  vpc_security_group_ids = [aws_security_group.app_sg.id]
+
+  user_data = base64encode(<<-EOF
+  #!/bin/bash
+  echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
+  DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
+  until
+    mysql -u wordpressuser -p"${DB_PASS}" -h ${aws_db_instance.clixx_rds_instance.address} -e "quit"; do
+      echo "Waiting for database connection..."
+      sleep 10
+  done
+  mysql -u wordpressuser -p"${DB_PASS}" -h ${aws_db_instance.clixx_rds_instance.address} -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
+EOF
+)
+
+  iam_instance_profile {
+    name = var.iam_instance_profile_name
+  }
+
+  depends_on = [ aws_db_instance.clixx_rds_instance ]
+}
+
+resource "aws_autoscaling_group" "clixx_asg" {
+  name = "clixx-asg"
+
+  min_size = 1
+  max_size = 3
+
+  launch_template {
+    id      = aws_launch_template.clixx_lt.id
+    version = "$Latest"
+  }
+
+  vpc_zone_identifier = [ for subnet in aws_subnet.app_subnet : subnet.id ]
+
+  tag {
+    key                 = "AmazonECSManaged"
+    value               = true
+    propagate_at_launch = true
+  }
+}
+
+resource "aws_ecs_service" "clixx_service" {
+  name            = "clixx-service"
+  cluster         = aws_ecs_cluster.clixx_ecs_cluster.id
+  task_definition = aws_ecs_task_definition.clixx_task.arn
+  desired_count   = 2
+  force_new_deployment = true
+
+  network_configuration {
+    subnets         = [for subnet in aws_subnet.app_subnet : subnet.id]
+    security_groups = [aws_security_group.app_sg.id]
+  }
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.clixx_tg.arn
+    container_name   = var.container_name
+    container_port   = 80
+  }
+
+  capacity_provider_strategy {
+    capacity_provider = aws_ecs_capacity_provider.ec2.name
+    weight            = 100
+  }
+}
+
+resource "aws_ecs_capacity_provider" "ec2" {
+  name = "packer-ami-provider"
+
+  auto_scaling_group_provider {
+    auto_scaling_group_arn         = aws_autoscaling_group.clixx_asg.arn
+    managed_termination_protection = "DISABLED"
+
+    managed_scaling {
+      status          = "ENABLED"
+      target_capacity = 50 
+    }
+  }
+}
+
+resource "aws_ecs_cluster_capacity_providers" "main" {
+  cluster_name       = aws_ecs_cluster.clixx_ecs_cluster.name
+  capacity_providers = [aws_ecs_capacity_provider.ec2.name]
+}
+
+### Create a Route53 record for Load Balancer DNS ###
+resource "aws_route53_record" "this" {
+  provider = aws.management
+  zone_id  = data.aws_route53_zone.mydns.zone_id
+  name     = "ecs.${data.aws_route53_zone.mydns.name}"
+  type     = "A"
+  
+  latency_routing_policy {
+    region = var.aws_region
+  }
+
+  set_identifier = "ecs.deji-stack.com"
+
+  alias {
+    name                   = aws_lb.clixx_alb.dns_name
+    zone_id                = aws_lb.clixx_alb.zone_id
+    evaluate_target_health = true
+  } 
+}
