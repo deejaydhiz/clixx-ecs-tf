@@ -3,7 +3,7 @@ provider "aws" {
   region = var.aws_region
   
   assume_role {
-    role_arn     = "arn:aws:iam::${var.accounts["dev"]}:role/stack_prog_aut"
+    role_arn     = "arn:aws:iam::${var.accounts["dev"]}:role/Engineer"
   }
 }
 

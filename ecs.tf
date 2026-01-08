@@ -12,7 +12,7 @@ data "aws_ami" "ecs_ami" {
     values = [var.ami_name]
   }
 
-  owners = ["self", "186769093804"]
+  owners = [ var.accounts["dev"], var.accounts["mgmt"] ]
 }
 
 data "aws_ecr_repository" "clixx_repo" {
@@ -25,7 +25,7 @@ data "aws_ecr_image" "clixx_image" {
 }
 
 resource "aws_iam_role_policy_attachment" "ecs_instance_role_attachment" {
-  role       = var.iam_instance_profile_name
+  role       = var.ec2_properties["iam_instance_profile"]
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
 }
 
@@ -136,17 +136,19 @@ resource "aws_launch_template" "clixx_lt" {
   #!/bin/bash
   echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
   DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
+
   until
-    mysql -u wordpressuser -p"${DB_PASS}" -h ${aws_db_instance.clixx_rds_instance.address} -e "quit"; do
+    mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
       echo "Waiting for database connection..."
       sleep 10
   done
-  mysql -u wordpressuser -p"${DB_PASS}" -h ${aws_db_instance.clixx_rds_instance.address} -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
+
+  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
 EOF
 )
 
   iam_instance_profile {
-    name = var.iam_instance_profile_name
+    name = var.ec2_properties["iam_instance_profile"]
   }
 
   depends_on = [ aws_db_instance.clixx_rds_instance ]

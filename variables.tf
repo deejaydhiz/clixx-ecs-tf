@@ -63,9 +63,8 @@ variable "ec2_properties" {
   default = {
     name                    = "clixx-web"
     instance_type           = "t3.micro"
-    ami_id                  = "ami-08d7aabbb50c2c24e"
     key_name                = "clixx-kp"
-    iam_instance_profile    = "ec2_instance_role"
+    iam_instance_profile    = "IAM_instance_profile"
   }
 }
 
@@ -133,10 +132,4 @@ variable "container_name" {
   description = "The name of the container in the ECS task definition"
   type        = string
   default     = "clixx-cont"
-}
-
-variable "iam_instance_profile_name" {
-  description = "The name of the IAM instance profile for EC2 instances"
-  type        = string
-  default     = "IAM_instance_profile"
 }
