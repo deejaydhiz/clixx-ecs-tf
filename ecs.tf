@@ -24,12 +24,15 @@ data "aws_ecr_image" "clixx_image" {
   image_tag       = "latest" 
 }
 
+data "aws_ssm_parameter" "db_pass" {
+  name = "clixxdb-pass"
+}
+
 ### Create keypair ###
 resource "aws_key_pair" "this" {
   key_name   = "clixx-kp"
   public_key = file(var.public_key_path)
 }
-
 
 resource "aws_iam_role_policy_attachment" "ecs_instance_role_attachment" {
   role       = var.ec2_properties["iam_instance_profile"]
@@ -60,27 +63,49 @@ resource "aws_ecs_task_definition" "clixx_task" {
   family                   = "clixx-task"
   network_mode             = "awsvpc"
   requires_compatibilities = ["EC2"]
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = 256
+  memory                   = 512
 
   container_definitions = jsonencode([
     {
-      "name"      = "clixx-cont"
-      "image"     = "${data.aws_ecr_repository.clixx_repo.repository_url}@${data.aws_ecr_image.clixx_image.image_digest}"
-      "essential" = true
-      "portMappings" = [
+      name      = "clixx-cont"
+      image     = "${data.aws_ecr_repository.clixx_repo.repository_url}@${data.aws_ecr_image.clixx_image.image_digest}"
+      essential = true
+      portMappings = [
         {
           "containerPort" = 80
           "hostPort"      = 80
           "protocol"      = "tcp"
         }
       ]
+
+      # Setting environment variables for WordPress to connect to RDS
+      environment = [
+        {
+          name  = "WORDPRESS_DB_HOST"
+          value = "${aws_db_instance.clixx_rds_instance.address}"
+        },
+        {
+          name  = "WORDPRESS_DB_USER"
+          value = "wordpressuser"
+        },
+        {
+          name  = "WORDPRESS_DB_NAME"
+          value = "wordpressdb"
+        },
+        {
+          name  = "WORDPRESS_DB_PASSWORD"
+          value = "${data.aws_ssm_parameter.db_pass.value}"
+        }
+      ]
+
       "logConfiguration" : {
         "logDriver" : "awslogs",
         "options" : {
           "awslogs-group" : "/ecs/clixx-task",
           "awslogs-region" : "${var.aws_region}", 
           "awslogs-stream-prefix" : "ecs"
+          "awslogs-create-group"  = "true" 
         }
       }
     }
@@ -142,17 +167,21 @@ resource "aws_launch_template" "clixx_lt" {
   user_data = base64encode(<<-EOF
   #!/bin/bash
   echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
-  DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
-
-  until
-    mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
-      echo "Waiting for database connection..."
-      sleep 10
-  done
-
-  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
 EOF
 )
+  # docker exec -u 0 clixx-cont sed -i "s/define( 'DB_HOST', '.*' );/define( 'DB_HOST', '${aws_db_instance.clixx_rds_instance.address}' );/" /var/www/html/wp-config.php
+  
+  # DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
+
+  # until
+  #   mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
+  #     echo "Waiting for database connection..."
+  #     sleep 10
+  # done
+
+  # mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
+# EOF
+# )
 
   iam_instance_profile {
     name = var.ec2_properties["iam_instance_profile"]
