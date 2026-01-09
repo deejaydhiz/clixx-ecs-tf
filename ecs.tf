@@ -167,21 +167,18 @@ resource "aws_launch_template" "clixx_lt" {
   user_data = base64encode(<<-EOF
   #!/bin/bash
   echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
+
+  DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
+
+  until
+    mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
+      echo "Waiting for database connection..."
+      sleep 10
+  done
+
+  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
 EOF
 )
-  # docker exec -u 0 clixx-cont sed -i "s/define( 'DB_HOST', '.*' );/define( 'DB_HOST', '${aws_db_instance.clixx_rds_instance.address}' );/" /var/www/html/wp-config.php
-  
-  # DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
-
-  # until
-  #   mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
-  #     echo "Waiting for database connection..."
-  #     sleep 10
-  # done
-
-  # mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
-# EOF
-# )
 
   iam_instance_profile {
     name = var.ec2_properties["iam_instance_profile"]
