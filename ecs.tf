@@ -193,6 +193,7 @@ resource "aws_autoscaling_group" "clixx_asg" {
   min_size = 1
   max_size = 3
   desired_capacity = 2
+  force_delete = true
 
   launch_template {
     id      = aws_launch_template.clixx_lt.id
