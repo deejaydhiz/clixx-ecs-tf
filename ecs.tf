@@ -176,7 +176,7 @@ resource "aws_launch_template" "clixx_lt" {
       sleep 10
   done
 
-  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name IN ('siteurl', 'home');"
+  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name LIKE '%NLB%';"
 EOF
 )
 
@@ -192,6 +192,7 @@ resource "aws_autoscaling_group" "clixx_asg" {
 
   min_size = 1
   max_size = 3
+  desired_capacity = 2
 
   launch_template {
     id      = aws_launch_template.clixx_lt.id
