@@ -170,17 +170,37 @@ resource "aws_launch_template" "clixx_lt" {
 
   user_data = base64encode(<<-EOF
   #!/bin/bash
+  set -e
+
+  yum install -y awscli mysql
+
   echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
 
-  DB_PASS=$(aws ssm get-parameter --name clixxdb-pass --query Parameter.Value --output text)
+  DB_HOST="${aws_db_instance.clixx_rds_instance.address}"
 
-  until
-    mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -e "quit"; do
+  until mysql -u wordpressuser -p"$$(aws ssm get-parameter \
+    --region us-east-1 \
+    --name clixxdb-pass \
+    --with-decryption \
+    --query Parameter.Value \
+    --output text)" \
+    -h "$DB_HOST" -e "quit"; do
       echo "Waiting for database connection..."
       sleep 10
   done
 
-  mysql -u wordpressuser -p"$${DB_PASS}" -h "${aws_db_instance.clixx_rds_instance.address}" -D wordpressdb -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name LIKE '%NLB%';"
+  if [ ! -f /var/lib/clixx_db_init_done ]; then
+    mysql -u wordpressuser -p"$$(aws ssm get-parameter \
+      --region us-east-1 \
+      --name clixxdb-pass \
+      --with-decryption \
+      --query Parameter.Value \
+      --output text)" \
+      -h "$DB_HOST" -D wordpressdb \
+      -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name LIKE '%nlb%';"
+
+    touch /var/lib/clixx_db_init_done
+  fi
 EOF
 )
 
