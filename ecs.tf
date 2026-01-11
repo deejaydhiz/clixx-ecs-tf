@@ -1,34 +1,4 @@
-data "aws_route53_zone" "mydns" {
-  provider     = aws.management
-  name         = "deji-stack.com"
-  private_zone = false
-}
 
-data "aws_ami" "ecs_ami" {
-  most_recent = true
-
-  filter {
-    name   = "name"
-    values = [var.ami_name]
-  }
-
-  owners = [ var.accounts["dev"], var.accounts["mgmt"] ]
-}
-
-data "aws_ecr_repository" "clixx_repo" {
-  name = "clixx-repository"
-}
-
-data "aws_ecr_image" "clixx_image" {
-  repository_name = "clixx-repository"
-  image_tag       = "latest" 
-}
-
-data "aws_ssm_parameter" "db_pass" {
-  name = "clixxdb-pass"
-}
-
-### Create keypair ###
 resource "aws_key_pair" "this" {
   key_name   = "clixx-kp"
   public_key = file(var.public_key_path)
@@ -37,6 +7,41 @@ resource "aws_key_pair" "this" {
 resource "aws_iam_role_policy_attachment" "ecs_instance_role_attachment" {
   role       = var.ec2_properties["iam_instance_profile"]
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+# The "Execution Role" allows ECS to pull the image and fetch SSM secrets
+resource "aws_iam_role" "ecs_task_execution_role" {
+  name = "clixx-task-execution-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+    }]
+  })
+}
+
+# Attach the standard Amazon policy for ECR and CloudWatch logs
+resource "aws_iam_role_policy_attachment" "execution_role_standard" {
+  role       = aws_iam_role.ecs_task_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Add a specific policy to allow reading the SSM Parameter
+resource "aws_iam_role_policy" "ssm_read" {
+  name = "allow-ssm-read"
+  role = aws_iam_role.ecs_task_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ssm:GetParameters", "kms:Decrypt"]
+      Resource = ["${data.aws_ssm_parameter.db_pass.arn}"]
+    }]
+  })
 }
 
 resource "aws_db_instance" "clixx_rds_instance" {
@@ -54,62 +59,89 @@ resource "aws_db_instance" "clixx_rds_instance" {
   }
 }
 
+### Create a Route53 record for Load Balancer DNS ###
+resource "aws_route53_record" "this" {
+  provider = aws.management
+  zone_id  = data.aws_route53_zone.mydns.zone_id
+  name     = "ecs.${data.aws_route53_zone.mydns.name}"
+  type     = "A"
+  
+  set_identifier = "ecs.deji-stack.com"
+
+  alias {
+    name                   = aws_lb.clixx_alb.dns_name
+    zone_id                = aws_lb.clixx_alb.zone_id
+    evaluate_target_health = true
+  } 
+}
+
 resource "aws_ecs_cluster" "clixx_ecs_cluster" {
   name = "clixx-ecs-cluster"
 
 }
 
-resource "aws_ecs_task_definition" "clixx_task" {
-  family                   = "clixx-task"
-  network_mode             = "awsvpc"
+resource "aws_ecs_task_definition" "clixx_db_init" {
+  family                   = "clixx-db-init"
   requires_compatibilities = ["EC2"]
+  network_mode             = "awsvpc"
   cpu                      = 256
   memory                   = 512
 
+  execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
+
   container_definitions = jsonencode([
     {
-      name      = "clixx-cont"
+      name      = "db-init"
       image     = "${data.aws_ecr_repository.clixx_repo.repository_url}@${data.aws_ecr_image.clixx_image.image_digest}"
       essential = true
-      portMappings = [
-        {
-          "containerPort" = 80
-          "hostPort"      = 80
-          "protocol"      = "tcp"
-        }
+
+      command = [
+        "sh",
+        "-c",
+        <<-EOT
+          set -e
+
+          echo "Waiting for database..."
+          until mysql -h "$WORDPRESS_DB_HOST" \
+            -u "$WORDPRESS_DB_USER" \
+            -p"$WORDPRESS_DB_PASSWORD" \
+            -e "select 1"; do
+            sleep 5
+          done
+
+          echo "Running DB initialization..."
+          mysql -h "$WORDPRESS_DB_HOST" \
+            -u "$WORDPRESS_DB_USER" \
+            -p"$WORDPRESS_DB_PASSWORD" \
+            "$WORDPRESS_DB_NAME" <<'SQL'
+          UPDATE wp_options
+          SET option_value='http://ecs.deji-stack.com'
+          WHERE option_name IN ('home','siteurl');
+          SQL
+
+          echo "DB init completed"
+        EOT
       ]
 
-      # Setting environment variables for WordPress to connect to RDS
       environment = [
+        { name = "WORDPRESS_DB_HOST", value = aws_db_instance.clixx_rds_instance.address },
+        { name = "WORDPRESS_DB_USER", value = "wordpressuser" },
+        { name = "WORDPRESS_DB_NAME", value = "wordpressdb" }
+      ]
+
+      secrets = [
         {
-          name  = "WORDPRESS_DB_HOST"
-          value = "${aws_db_instance.clixx_rds_instance.address}"
-        },
-        {
-          name  = "WORDPRESS_DB_USER"
-          value = "wordpressuser"
-        },
-        {
-          name  = "WORDPRESS_DB_NAME"
-          value = "wordpressdb"
-        },
-        {
-          name  = "WORDPRESS_DB_PASSWORD"
-          value = "${data.aws_ssm_parameter.db_pass.value}"
-        },
-        {
-          name  = "WORDPRESS_CONFIG_EXTRA"
-          value = "define('WP_HOME','http://ecs.deji-stack.com'); define('WP_SITEURL','http://ecs.deji-stack.com');"
+          name      = "WORDPRESS_DB_PASSWORD"
+          valueFrom = data.aws_ssm_parameter.db_pass.arn
         }
       ]
 
-      "logConfiguration" : {
-        "logDriver" : "awslogs",
-        "options" : {
-          "awslogs-group" : "/ecs/clixx-task",
-          "awslogs-region" : "${var.aws_region}", 
-          "awslogs-stream-prefix" : "ecs"
-          "awslogs-create-group"  = "true" 
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.clixx_log_group.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "db-init"
         }
       }
     }
@@ -142,7 +174,7 @@ resource "aws_lb_target_group" "clixx_tg" {
 
   health_check {
     protocol            = "HTTP"
-    path                = "/"
+    path                = "/index.php"
     healthy_threshold   = 2
     unhealthy_threshold = 2
     timeout             = 5
@@ -166,43 +198,23 @@ resource "aws_launch_template" "clixx_lt" {
   image_id      = data.aws_ami.ecs_ami.id
   instance_type = var.ec2_properties["instance_type"]
   key_name      = aws_key_pair.this.key_name
-  vpc_security_group_ids = [aws_security_group.app_sg.id]
+
+  vpc_security_group_ids = [
+    aws_security_group.app_sg.id
+  ]
 
   user_data = base64encode(<<-EOF
-  #!/bin/bash
-  set -e
+    #!/bin/bash
+    set -e
 
-  echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
-
-  DB_HOST="${aws_db_instance.clixx_rds_instance.address}"
-
-  until mysql -u wordpressuser -p"$$(aws ssm get-parameter \
-    --name clixxdb-pass \
-    --query Parameter.Value \
-    --output text)" \
-    -h "$DB_HOST" -e "quit"; do
-      echo "Waiting for database connection..."
-      sleep 10
-  done
-
-  if [ ! -f /var/lib/clixx_db_init_done ]; then
-    mysql -u wordpressuser -p"$$(aws ssm get-parameter \
-      --name clixxdb-pass \
-      --query Parameter.Value \
-      --output text)" \
-      -h "$DB_HOST" -D wordpressdb \
-      -e "UPDATE wp_options SET option_value='http://ecs.deji-stack.com' WHERE option_name LIKE '%nlb%';"
-
-    touch /var/lib/clixx_db_init_done
-  fi
-EOF
-)
+    echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
+    echo "ECS_ENABLE_CONTAINER_METADATA=true" >> /etc/ecs/ecs.config
+  EOF
+  )
 
   iam_instance_profile {
     name = var.ec2_properties["iam_instance_profile"]
   }
-
-  depends_on = [ aws_db_instance.clixx_rds_instance ]
 }
 
 resource "aws_autoscaling_group" "clixx_asg" {
@@ -234,6 +246,8 @@ resource "aws_ecs_service" "clixx_service" {
   desired_count        = 2
   force_new_deployment = true
   force_delete         = true
+  deployment_minimum_healthy_percent = 50
+  deployment_maximum_percent         = 200
 
   network_configuration {
     subnets         = [for subnet in aws_subnet.app_subnet : subnet.id]
@@ -261,7 +275,7 @@ resource "aws_ecs_capacity_provider" "ec2" {
 
     managed_scaling {
       status          = "ENABLED"
-      target_capacity = 50 
+      target_capacity = 80
     }
   }
 }
@@ -271,22 +285,19 @@ resource "aws_ecs_cluster_capacity_providers" "main" {
   capacity_providers = [aws_ecs_capacity_provider.ec2.name]
 }
 
-### Create a Route53 record for Load Balancer DNS ###
-resource "aws_route53_record" "this" {
-  provider = aws.management
-  zone_id  = data.aws_route53_zone.mydns.zone_id
-  name     = "ecs.${data.aws_route53_zone.mydns.name}"
-  type     = "A"
-  
-  latency_routing_policy {
-    region = var.aws_region
+resource "null_resource" "run_db_init" {
+  depends_on = [
+    aws_ecs_cluster.clixx_ecs_cluster,
+    aws_db_instance.clixx_rds_instance
+  ]
+
+  provisioner "local-exec" {
+    command = <<EOT
+      aws ecs run-task \
+        --cluster ${aws_ecs_cluster.clixx_ecs_cluster.name} \
+        --task-definition ${aws_ecs_task_definition.clixx_db_init.family} \
+        --launch-type EC2 \
+        --network-configuration "awsvpcConfiguration={subnets=[${aws_subnet.app_subnet[0].id}],securityGroups=[${aws_security_group.app_sg.id}]}"
+    EOT
   }
-
-  set_identifier = "ecs.deji-stack.com"
-
-  alias {
-    name                   = aws_lb.clixx_alb.dns_name
-    zone_id                = aws_lb.clixx_alb.zone_id
-    evaluate_target_health = true
-  } 
 }
