@@ -96,6 +96,10 @@ resource "aws_ecs_task_definition" "clixx_task" {
         {
           name  = "WORDPRESS_DB_PASSWORD"
           value = "${data.aws_ssm_parameter.db_pass.value}"
+        },
+        {
+          name  = "WORDPRESS_CONFIG_EXTRA"
+          value = "define('WP_HOME','http://ecs.deji-stack.com'); define('WP_SITEURL','http://ecs.deji-stack.com');"
         }
       ]
 
@@ -125,7 +129,7 @@ resource "aws_lb" "clixx_alb" {
   subnets            = [for subnet in aws_subnet.public_subnet : subnet.id]
 
   tags = {
-    Environment = "automation"
+    Environment = "dev"
   }
 }
 
