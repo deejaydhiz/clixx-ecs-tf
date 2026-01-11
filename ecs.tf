@@ -214,11 +214,12 @@ resource "aws_autoscaling_group" "clixx_asg" {
 }
 
 resource "aws_ecs_service" "clixx_service" {
-  name            = "clixx-service"
-  cluster         = aws_ecs_cluster.clixx_ecs_cluster.id
-  task_definition = aws_ecs_task_definition.clixx_task.arn
-  desired_count   = 2
+  name                 = "clixx-service"
+  cluster              = aws_ecs_cluster.clixx_ecs_cluster.id
+  task_definition      = aws_ecs_task_definition.clixx_task.arn
+  desired_count        = 2
   force_new_deployment = true
+  force_delete         = true
 
   network_configuration {
     subnets         = [for subnet in aws_subnet.app_subnet : subnet.id]
