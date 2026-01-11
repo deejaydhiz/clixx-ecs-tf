@@ -179,9 +179,7 @@ resource "aws_launch_template" "clixx_lt" {
   DB_HOST="${aws_db_instance.clixx_rds_instance.address}"
 
   until mysql -u wordpressuser -p"$$(aws ssm get-parameter \
-    --region us-east-1 \
     --name clixxdb-pass \
-    --with-decryption \
     --query Parameter.Value \
     --output text)" \
     -h "$DB_HOST" -e "quit"; do
@@ -191,9 +189,7 @@ resource "aws_launch_template" "clixx_lt" {
 
   if [ ! -f /var/lib/clixx_db_init_done ]; then
     mysql -u wordpressuser -p"$$(aws ssm get-parameter \
-      --region us-east-1 \
       --name clixxdb-pass \
-      --with-decryption \
       --query Parameter.Value \
       --output text)" \
       -h "$DB_HOST" -D wordpressdb \
