@@ -172,8 +172,6 @@ resource "aws_launch_template" "clixx_lt" {
   #!/bin/bash
   set -e
 
-  yum install -y awscli mysql
-
   echo "ECS_CLUSTER=${aws_ecs_cluster.clixx_ecs_cluster.name}" >> /etc/ecs/ecs.config
 
   DB_HOST="${aws_db_instance.clixx_rds_instance.address}"
