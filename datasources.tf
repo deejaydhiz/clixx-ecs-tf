@@ -15,8 +15,12 @@ data "aws_ami" "ecs_ami" {
   owners = [ var.accounts["dev"], var.accounts["mgmt"] ]
 }
 
+data "aws_ecr_repository" "clixx_repo" {
+  name = "clixx-repository"
+}
+
 data "aws_ecr_image" "clixx_image" {
-  repository_name = "clixx-repository"
+  repository_name = data.aws_ecr_repository.clixx_repo.name
   image_tag       = "latest" 
 }
 

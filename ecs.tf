@@ -65,8 +65,6 @@ resource "aws_route53_record" "this" {
   zone_id  = data.aws_route53_zone.mydns.zone_id
   name     = "ecs.${data.aws_route53_zone.mydns.name}"
   type     = "A"
-  
-  set_identifier = "ecs.deji-stack.com"
 
   alias {
     name                   = aws_lb.clixx_alb.dns_name
@@ -80,47 +78,25 @@ resource "aws_ecs_cluster" "clixx_ecs_cluster" {
 
 }
 
-resource "aws_ecs_task_definition" "clixx_db_init" {
-  family                   = "clixx-db-init"
+resource "aws_ecs_task_definition" "clixx_task" {
+  family                   = "clixx-task"
   requires_compatibilities = ["EC2"]
   network_mode             = "awsvpc"
   cpu                      = 256
   memory                   = 512
-
   execution_role_arn = aws_iam_role.ecs_task_execution_role.arn
 
   container_definitions = jsonencode([
     {
-      name      = "db-init"
+      name      = var.container_name
       image     = "${data.aws_ecr_repository.clixx_repo.repository_url}@${data.aws_ecr_image.clixx_image.image_digest}"
       essential = true
 
-      command = [
-        "sh",
-        "-c",
-        <<-EOT
-          set -e
-
-          echo "Waiting for database..."
-          until mysql -h "$WORDPRESS_DB_HOST" \
-            -u "$WORDPRESS_DB_USER" \
-            -p"$WORDPRESS_DB_PASSWORD" \
-            -e "select 1"; do
-            sleep 5
-          done
-
-          echo "Running DB initialization..."
-          mysql -h "$WORDPRESS_DB_HOST" \
-            -u "$WORDPRESS_DB_USER" \
-            -p"$WORDPRESS_DB_PASSWORD" \
-            "$WORDPRESS_DB_NAME" <<'SQL'
-          UPDATE wp_options
-          SET option_value='http://ecs.deji-stack.com'
-          WHERE option_name IN ('home','siteurl');
-          SQL
-
-          echo "DB init completed"
-        EOT
+      portMappings = [
+        {
+          containerPort = 80
+          protocol      = "tcp"
+        }
       ]
 
       environment = [
@@ -141,7 +117,7 @@ resource "aws_ecs_task_definition" "clixx_db_init" {
         options = {
           awslogs-group         = aws_cloudwatch_log_group.clixx_log_group.name
           awslogs-region        = var.aws_region
-          awslogs-stream-prefix = "db-init"
+          awslogs-stream-prefix = "ecs"
         }
       }
     }
@@ -171,10 +147,11 @@ resource "aws_lb_target_group" "clixx_tg" {
   protocol = "HTTP"
   vpc_id   = aws_vpc.deployment_vpc.id
   target_type = "ip"
+  deregistration_delay = 30 
 
   health_check {
     protocol            = "HTTP"
-    path                = "/index.php"
+    path                = "/license.txt"
     healthy_threshold   = 2
     unhealthy_threshold = 2
     timeout             = 5
@@ -224,6 +201,7 @@ resource "aws_autoscaling_group" "clixx_asg" {
   max_size = 3
   desired_capacity = 2
   force_delete = true
+  protect_from_scale_in = true 
 
   launch_template {
     id      = aws_launch_template.clixx_lt.id
@@ -271,7 +249,7 @@ resource "aws_ecs_capacity_provider" "ec2" {
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.clixx_asg.arn
-    managed_termination_protection = "DISABLED"
+    managed_termination_protection = "ENABLED"
 
     managed_scaling {
       status          = "ENABLED"
@@ -283,21 +261,4 @@ resource "aws_ecs_capacity_provider" "ec2" {
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name       = aws_ecs_cluster.clixx_ecs_cluster.name
   capacity_providers = [aws_ecs_capacity_provider.ec2.name]
-}
-
-resource "null_resource" "run_db_init" {
-  depends_on = [
-    aws_ecs_cluster.clixx_ecs_cluster,
-    aws_db_instance.clixx_rds_instance
-  ]
-
-  provisioner "local-exec" {
-    command = <<EOT
-      aws ecs run-task \
-        --cluster ${aws_ecs_cluster.clixx_ecs_cluster.name} \
-        --task-definition ${aws_ecs_task_definition.clixx_db_init.family} \
-        --launch-type EC2 \
-        --network-configuration "awsvpcConfiguration={subnets=[${aws_subnet.app_subnet[0].id}],securityGroups=[${aws_security_group.app_sg.id}]}"
-    EOT
-  }
 }
