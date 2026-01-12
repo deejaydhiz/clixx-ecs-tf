@@ -105,6 +105,32 @@ resource "aws_ecs_task_definition" "clixx_task" {
         { name = "WORDPRESS_DB_NAME", value = "wordpressdb" }
       ]
 
+      command = [
+        "sh",
+        "-c",
+        <<-EOT
+          set -e
+
+          echo "Waiting for database..."
+          until mysql -h "$WORDPRESS_DB_HOST" \
+            -u "$WORDPRESS_DB_USER" \
+            -p"$WORDPRESS_DB_PASSWORD" \
+            -e "SELECT 1"; do
+            sleep 5
+          done
+
+          echo "Updating WordPress URLs..."
+          mysql -h "$WORDPRESS_DB_HOST" \
+            -u "$WORDPRESS_DB_USER" \
+            -p"$WORDPRESS_DB_PASSWORD" \
+            "$WORDPRESS_DB_NAME" <<'SQL'
+          UPDATE wp_options
+          SET option_value='http://ecs.deji-stack.com'
+          WHERE option_name LIKE '%NLB%';
+
+        EOT
+      ]
+
       secrets = [
         {
           name      = "WORDPRESS_DB_PASSWORD"
