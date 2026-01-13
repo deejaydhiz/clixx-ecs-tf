@@ -105,6 +105,13 @@ resource "aws_ecs_task_definition" "clixx_task" {
         { name = "WORDPRESS_DB_NAME", value = "wordpressdb" }
       ]
 
+      secrets = [
+        {
+          name      = "WORDPRESS_DB_PASSWORD"
+          valueFrom = data.aws_ssm_parameter.db_pass.arn
+        }
+      ]
+
       command = [
         "/bin/bash",
         "-c",
@@ -123,19 +130,11 @@ resource "aws_ecs_task_definition" "clixx_task" {
           mysql -h "$WORDPRESS_DB_HOST" \
             -u "$WORDPRESS_DB_USER" \
             -p"$WORDPRESS_DB_PASSWORD" \
-            "$WORDPRESS_DB_NAME" <<'SQL'
+            -D "WORDPRESS_DB_NAME" <<'SQL'
           UPDATE wp_options
           SET option_value='http://ecs.deji-stack.com'
           WHERE option_name LIKE '%NLB%';
-
         EOT
-      ]
-
-      secrets = [
-        {
-          name      = "WORDPRESS_DB_PASSWORD"
-          valueFrom = data.aws_ssm_parameter.db_pass.arn
-        }
       ]
 
       logConfiguration = {
