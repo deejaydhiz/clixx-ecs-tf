@@ -122,6 +122,7 @@ resource "aws_ecs_task_definition" "clixx_task" {
           until mysql -h "$WORDPRESS_DB_HOST" \
             -u "$WORDPRESS_DB_USER" \
             -p"$WORDPRESS_DB_PASSWORD" \
+            --skip-ssl \
             -e "SELECT 1"; do
             sleep 5
           done
@@ -130,10 +131,15 @@ resource "aws_ecs_task_definition" "clixx_task" {
           mysql -h "$WORDPRESS_DB_HOST" \
             -u "$WORDPRESS_DB_USER" \
             -p"$WORDPRESS_DB_PASSWORD" \
-            -D "WORDPRESS_DB_NAME" <<'SQL'
+            --skip-ssl \
+            -D "$WORDPRESS_DB_NAME" <<'SQL'
           UPDATE wp_options
           SET option_value='http://ecs.deji-stack.com'
           WHERE option_name LIKE '%NLB%';
+SQL
+
+          echo "Starting WordPress..."
+          exec docker-entrypoint.sh apache2-foreground
         EOT
       ]
 
@@ -221,12 +227,14 @@ resource "aws_launch_template" "clixx_lt" {
 
 resource "aws_autoscaling_group" "clixx_asg" {
   name = "clixx-asg"
-
-  min_size = 1
+  
+  min_size = 2
   max_size = 3
-  desired_capacity = 2
+
   force_delete = true
-  protect_from_scale_in = true 
+  protect_from_scale_in = false
+
+  termination_policies = ["OldestInstance"]
 
   launch_template {
     id      = aws_launch_template.clixx_lt.id
@@ -239,6 +247,10 @@ resource "aws_autoscaling_group" "clixx_asg" {
     key                 = "AmazonECSManaged"
     value               = true
     propagate_at_launch = true
+  }
+
+  lifecycle {
+    create_before_destroy = false
   }
 }
 
@@ -277,7 +289,7 @@ resource "aws_ecs_capacity_provider" "ec2" {
     managed_termination_protection = "ENABLED"
 
     managed_scaling {
-      status          = "ENABLED"
+      status          = "DISABLED"
       target_capacity = 80
     }
   }
