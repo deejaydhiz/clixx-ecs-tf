@@ -106,7 +106,7 @@ resource "aws_ecs_task_definition" "clixx_task" {
       ]
 
       command = [
-        "sh",
+        "/bin/bash",
         "-c",
         <<-EOT
           set -e
