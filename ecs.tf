@@ -231,8 +231,8 @@ resource "aws_autoscaling_group" "clixx_asg" {
   min_size = 2
   max_size = 3
 
-  force_delete = true
-  protect_from_scale_in = false
+  force_delete          = true
+  protect_from_scale_in = true
 
   termination_policies = ["OldestInstance"]
 
